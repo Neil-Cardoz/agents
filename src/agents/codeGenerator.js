@@ -1,4 +1,4 @@
-import { generateContent } from '../lib/gemini.js';
+import { startChatSession } from '../lib/gemini.js';
 
 export const codeAgent = {
     id: 'python-coder',
@@ -6,24 +6,30 @@ export const codeAgent = {
     description: 'Describe a problem, get clean Python code.',
     icon: '🐍',
 
+    chat: null,
+
     renderInput: () => `
     <h3>Problem Description</h3>
-    <textarea id="code-input" class="input-field" style="height: 100px;" placeholder="e.g., Write a function to check if a number is prime..."></textarea>
-    <button id="code-submit" class="btn">Generate Code</button>
-    <div id="loading-code" style="display:none; color: var(--neon-primary); margin-top:1rem;">Coding...</div>
+    <p>Describe your coding problem.</p>
+    <div class="flex-col" style="gap:1rem;">
+      <textarea id="code-input" class="input-field" style="height: 100px; resize: vertical;" placeholder="e.g., Write a function to check if a number is prime..."></textarea>
+      <button id="code-submit" class="btn">Generate Code</button>
+    </div>
   `,
 
-    attachListeners: (displayOutput) => {
+    attachListeners: (chatInterface) => {
         const btn = document.getElementById('code-submit');
         const input = document.getElementById('code-input');
-        const loading = document.getElementById('loading-code');
+
+        codeAgent.chat = startChatSession();
 
         btn.addEventListener('click', async () => {
             const promptText = input.value.trim();
             if (!promptText) return;
 
-            loading.style.display = 'block';
+            const loadingId = chatInterface.setLoading(true);
             btn.disabled = true;
+            chatInterface.disableInput(true);
 
             try {
                 const prompt = `
@@ -33,14 +39,29 @@ export const codeAgent = {
           Problem:
           ${promptText}
         `;
-                const result = await generateContent(prompt);
-                displayOutput(result);
+                const result = await codeAgent.chat.sendMessage(prompt);
+                chatInterface.clearLoading(loadingId);
+                chatInterface.appendModelMessage(result.response.text());
+                chatInterface.disableInput(false);
             } catch (e) {
-                displayOutput(`Error: ${e.message}`);
+                chatInterface.clearLoading(loadingId);
+                chatInterface.appendModelMessage(`Error: ${e.message}`);
+                chatInterface.disableInput(false);
             } finally {
-                loading.style.display = 'none';
                 btn.disabled = false;
             }
         });
+    },
+
+    onChatMessage: async (message, onResponse, attachments = []) => {
+        if (!codeAgent.chat) codeAgent.chat = startChatSession();
+
+        let payload = message;
+        if (attachments.length > 0) {
+            payload = [message, ...attachments];
+        }
+
+        const result = await codeAgent.chat.sendMessage(payload);
+        onResponse(result.response.text());
     }
 };

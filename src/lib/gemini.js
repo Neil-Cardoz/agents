@@ -6,6 +6,7 @@ let model = null;
 export const initGemini = (apiKey) => {
     try {
         genAI = new GoogleGenerativeAI(apiKey);
+        // User requested gemini-3-flash-preview
         model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
         localStorage.setItem("gemini_api_key", apiKey);
         return true;
@@ -18,6 +19,16 @@ export const initGemini = (apiKey) => {
 export const getStoredKey = () => {
     return localStorage.getItem("gemini_api_key");
 }
+
+export const startChatSession = (history = []) => {
+    if (!model) throw new Error("Gemini not initialized");
+    return model.startChat({
+        history: history,
+        generationConfig: {
+            maxOutputTokens: 8000,
+        },
+    });
+};
 
 export const generateContent = async (prompt) => {
     if (!model) {

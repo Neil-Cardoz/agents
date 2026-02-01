@@ -1,4 +1,4 @@
-import { generateContent } from '../lib/gemini.js';
+import { startChatSession } from '../lib/gemini.js';
 import { readAsText, downloadFile } from '../lib/utils.js';
 
 export const labAgent = {
@@ -7,27 +7,38 @@ export const labAgent = {
     description: 'Upload .ipynb to add Aim, Objectives, Theory, and proper comments.',
     icon: '🧪',
 
+    // State to hold the active chat session
+    chat: null,
+    lastJson: null,
+
     renderInput: () => `
     <h3>Upload Notebook</h3>
-    <p>Select your .ipynb file.</p>
-    <div class="flex-col" style="gap:1rem; max-width: 400px;">
+    <p>Select your .ipynb file to start the session.</p>
+    <div class="flex-col" style="gap:1rem;">
       <input type="file" id="lab-file" accept=".ipynb" class="input-field">
-      <button id="lab-submit" class="btn">Process & Download</button>
+      <button id="lab-submit" class="btn">Process & Init Chat</button>
+      <button id="lab-download" class="btn" style="display:none; border-color: var(--neon-secondary); color: var(--neon-secondary);">Download Result</button>
     </div>
-    <div id="loading" style="display:none; margin-top:1rem; color: var(--neon-primary);">Processing... This may take a minute.</div>
+    <div style="margin-top: 1rem; font-size: 0.9rem; color: var(--text-muted);">
+      Once processed, you can ask follow-up questions in the chat window.
+    </div>
   `,
 
-    attachListeners: (displayOutput) => {
+    attachListeners: (chatInterface) => {
         const btn = document.getElementById('lab-submit');
+        const downloadBtn = document.getElementById('lab-download');
         const input = document.getElementById('lab-file');
-        const loading = document.getElementById('loading');
+
+        // Initialize chat session on load (empty history)
+        labAgent.chat = startChatSession();
 
         btn.addEventListener('click', async () => {
             if (!input.files.length) return alert('Please upload a file first.');
 
             const file = input.files[0];
-            loading.style.display = 'block';
+            const loadingId = chatInterface.setLoading(true);
             btn.disabled = true;
+            chatInterface.disableInput(true);
 
             try {
                 const text = await readAsText(file);
@@ -37,7 +48,7 @@ export const labAgent = {
                 const codeCells = json.cells.filter(c => c.cell_type === 'code');
                 const codeContent = codeCells.map(c => c.source.join('')).join('\n\n# NEXT CELL\n\n');
 
-                const prompt = `
+                const systemPrompt = `
           I have a python notebook. I need you to analyze the code and extract the likely Aim, Objectives, and Theory for this lab assignment.
           Also, strictly refactor the code to improve quality and add detailed comments explaining each step.
           
@@ -54,22 +65,19 @@ export const labAgent = {
           ${codeContent}
         `;
 
-                const responseText = await generateContent(prompt);
+                // Send the initial heavy context to the chat
+                const result = await labAgent.chat.sendMessage(systemPrompt);
+                const responseText = result.response.text();
+
                 // Clean cleanup if model adds markdown blocks
                 const cleaned = responseText.replace(/```json/g, '').replace(/```/g, '');
                 const data = JSON.parse(cleaned);
 
                 // Construct new cells
                 const newCells = [];
-
-                // Header Cells
                 newCells.push({ cell_type: "markdown", metadata: {}, source: [`# ${data.aim}`] });
                 newCells.push({ cell_type: "markdown", metadata: {}, source: [`## Objectives\n${data.objectives.map(o => `- ${o}`).join('\n')}`] });
                 newCells.push({ cell_type: "markdown", metadata: {}, source: [`## Theory\n${data.theory}`] });
-
-                // Code Cells (Assuming 1-to-1 mapping or just dumped sequentially if structure varies)
-                // For simple assignments, we'll try to map back, but simplified: assume user wants the refactored versions.
-                // If the number of blocks doesn't match, we just append them.
 
                 data.refactored_code_blocks.forEach(code => {
                     newCells.push({
@@ -82,17 +90,51 @@ export const labAgent = {
                 });
 
                 json.cells = newCells;
+                labAgent.lastJson = json;
+                labAgent.lastFileName = file.name;
 
-                downloadFile(`structured_${file.name}`, JSON.stringify(json, null, 2), 'application/json');
-                displayOutput(`### Success!\nFile downloaded as structure_${file.name}. \n\n**Aim Detected:** ${data.aim}`);
+                // Show success in chat
+                chatInterface.clearLoading(loadingId);
+                chatInterface.appendModelMessage(`
+### Analysis Complete! 🧪
+**Aim**: ${data.aim}
+
+I have refactored the code and added theory sections.
+You can now **Download** the file using the button on the left, or ask me questions about the code!
+        `);
+
+                // Enable controls
+                chatInterface.disableInput(false);
+                downloadBtn.style.display = 'block';
 
             } catch (e) {
                 console.error(e);
-                displayOutput(`### Error\n${e.message}`);
+                chatInterface.clearLoading(loadingId);
+                chatInterface.appendModelMessage(`**Error processing file**: ${e.message}`);
+                chatInterface.disableInput(false);
             } finally {
-                loading.style.display = 'none';
                 btn.disabled = false;
             }
         });
+
+        downloadBtn.addEventListener('click', () => {
+            if (labAgent.lastJson) {
+                downloadFile(`structured_${labAgent.lastFileName}`, JSON.stringify(labAgent.lastJson, null, 2), 'application/json');
+            }
+        });
+    },
+
+    onChatMessage: async (message, onResponse, attachments = []) => {
+        if (!labAgent.chat) {
+            labAgent.chat = startChatSession();
+        }
+
+        let payload = message;
+        if (attachments.length > 0) {
+            payload = [message, ...attachments];
+        }
+
+        const result = await labAgent.chat.sendMessage(payload);
+        onResponse(result.response.text());
     }
 };
